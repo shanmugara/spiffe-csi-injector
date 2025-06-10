@@ -52,12 +52,12 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
+	logger.Infof("creating admission struct")
 	adm := admission.Admitter{
 		Logger:  logger,
 		Request: in.Request,
 	}
-
+	logger.Infof("validating generate request object")
 	out, err := adm.MutatePodReview()
 	if err != nil {
 		e := fmt.Sprintf("could not generate admission response: %v", err)
@@ -67,6 +67,7 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	logger.Infof("marsahlling response to json")
 	jout, err := json.Marshal(out)
 	if err != nil {
 		e := fmt.Sprintf("could not parse admission response: %v", err)
@@ -88,7 +89,8 @@ func ServeHealthz(w http.ResponseWriter, r *http.Request) {
 
 // parseRequest extracts an AdmissionReview from an http.Request if possible
 func parseRequest(r http.Request) (*admissionv1.AdmissionReview, error) {
-
+	logger := logrus.New()
+	logger.Infof("parsing request parseRequest")
 	contentType := r.Header.Get("Content-Type")
 
 	if contentType != "application/json" {

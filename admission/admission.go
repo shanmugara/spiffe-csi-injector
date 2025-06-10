@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	ManagedCSILabel = "omega.k8s.io/managed-csi"
+	ManagedCSILabel      = "omega.k8s.io/managed-csi"
+	ManagedCSIAnnotation = "omegahome.net/managed-csi"
 )
 
 type Admitter struct {
@@ -23,6 +24,7 @@ type Admitter struct {
 
 func (a *Admitter) MutatePodReview() (*admissionv1.AdmissionReview, error) {
 	// Implement the logic to mutate the PodReview
+	a.Logger.Info("check if the object is a Pod")
 	pod, err := a.Pod() //Check of the object in the request is a Pod
 
 	if err != nil {
@@ -31,20 +33,33 @@ func (a *Admitter) MutatePodReview() (*admissionv1.AdmissionReview, error) {
 	}
 
 	// Check if the Pod is managed by the CSI driver webhook
+	a.Logger.Info("checking if the Pod has the managed label")
 
-	if pod.Labels[ManagedCSILabel] != "true" {
+	// Check if the Pod has the managed label
+	// if pod.Labels[ManagedCSILabel] != "true" {
+	//	a.Logger.Info("Pod is not managed by the CSI driver", pod.Name, pod.Namespace)
+	//	return reviewResponse(a.Request.UID, true, http.StatusOK, "Pod is not managed by the CSI driver"), nil
+	//}
+
+	// Check if the Pod has the managed annotation
+	if pod.Annotations[ManagedCSIAnnotation] != "true" {
 		a.Logger.Info("Pod is not managed by the CSI driver", pod.Name, pod.Namespace)
 		return reviewResponse(a.Request.UID, true, http.StatusOK, "Pod is not managed by the CSI driver"), nil
 	}
 
+	//DEBUG
+	a.Logger.Info("***** pre pods volumes", pod.Spec.Volumes)
+
 	//Create a new mutator
+	a.Logger.Info("creating a new mutator instance")
 	m := mutation.NewMutator(a.Logger)
+	a.Logger.Info("call mutatePodPatch..")
 	patch, err := m.MutatePodPatch(pod)
 	if err != nil {
 		e := fmt.Sprintf("failed to mutate the Pod: %v", err)
 		return reviewResponse(a.Request.UID, false, http.StatusBadRequest, e), err
 	}
-
+	a.Logger.Info("return pathch review response...")
 	return patchReviewResponse(a.Request.UID, patch)
 }
 
