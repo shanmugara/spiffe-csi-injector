@@ -186,16 +186,16 @@ func (sc InjectCSI) InjectVolumeMount(mpod *corev1.Pod) error {
 // InjectEnv injects the SPIFFE_ENDPOINT_SOCKET environment variable into all containers and init-containers
 func (sc InjectCSI) InjectEnv(mpod *corev1.Pod) error {
 	// Get extra environment variables from ConfigMap
-	extraEnv, err := sc.GetExtraEnvCm(mpod)
+	envVars, err := sc.GetExtraEnvCm(mpod)
 	if err != nil {
 		return err
 	}
 
 	// Set the SPIFFE_ENDPOINT_SOCKET environment variable
-	extraEnv[SpiffeEnvVar] = "unix://" + UdsMountPath1 + "/socket"
+	envVars[SpiffeEnvVar] = "unix://" + UdsMountPath1 + "/socket"
 
 	// Inject environment variables into init-containers
-	for k, v := range extraEnv {
+	for k, v := range envVars {
 		sc.Logger.Info("ExtraEnv key:", k, "value:", v)
 
 		if mpod.Spec.InitContainers != nil {
@@ -268,6 +268,7 @@ func (sc InjectCSI) GetExtraEnvCm(pod *corev1.Pod) (ExtraEnv, error) {
 
 }
 
+// Simple function to get a direct client incluster
 func (sc InjectCSI) GetDirectClient() (client.Client, error) {
 	directClient, err := client.New(config.GetConfigOrDie(), client.Options{})
 	if err != nil {
