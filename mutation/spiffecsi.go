@@ -1,8 +1,15 @@
 package mutation
 
 import (
+	"context"
+	"maps"
+	"os"
+
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 const (
@@ -11,11 +18,14 @@ const (
 	UdsMountPath2  = "/run/secrets/workload-spiffe-uds"
 	CsiDriver      = "csi.spiffe.io"
 	SpiffeEnvVar   = "SPIFFE_ENDPOINT_SOCKET"
+	ExtraEnvCmName = "spiffe-csi-injector-extra-env"
 )
 
 type InjectCSI struct {
 	Logger logrus.FieldLogger
 }
+
+type ExtraEnv map[string]string
 
 var _ PodMutator = &InjectCSI{}
 
@@ -173,42 +183,97 @@ func (sc InjectCSI) InjectVolumeMount(mpod *corev1.Pod) error {
 	return nil
 }
 
+// InjectEnv injects the SPIFFE_ENDPOINT_SOCKET environment variable into all containers and init-containers
 func (sc InjectCSI) InjectEnv(mpod *corev1.Pod) error {
-	if mpod.Spec.InitContainers != nil {
-		if err := sc.CheckEnvVar(mpod.Spec.InitContainers); err != nil {
+	// Get extra environment variables from ConfigMap
+	extraEnv, err := sc.GetExtraEnvCm(mpod)
+	if err != nil {
+		return err
+	}
+
+	// Set the SPIFFE_ENDPOINT_SOCKET environment variable
+	extraEnv[SpiffeEnvVar] = "unix://" + UdsMountPath1 + "/socket"
+
+	// Inject environment variables into init-containers
+	for k, v := range extraEnv {
+		sc.Logger.Info("ExtraEnv key:", k, "value:", v)
+
+		if mpod.Spec.InitContainers != nil {
+			if err := sc.CheckEnvVar(mpod.Spec.InitContainers, k, v); err != nil {
+				return err
+			}
+		}
+		if err := sc.CheckEnvVar(mpod.Spec.Containers, k, v); err != nil {
 			return err
 		}
-	}
-	if err := sc.CheckEnvVar(mpod.Spec.Containers); err != nil {
-		return err
 	}
 	return nil
 }
 
-func (sc InjectCSI) CheckEnvVar(containers []corev1.Container) error {
-	EnvValue := "unix://" + UdsMountPath1 + "/socket"
+func (sc InjectCSI) CheckEnvVar(containers []corev1.Container, env string, val string) error {
 	for i := range containers {
 		if containers[i].Env == nil {
 			containers[i].Env = []corev1.EnvVar{
 				{
-					Name:  SpiffeEnvVar,
-					Value: EnvValue,
+					Name:  env,
+					Value: val,
 				},
 			}
 		} else {
 			for j, envVar := range containers[i].Env {
-				if envVar.Name == SpiffeEnvVar {
-					if envVar.Value != EnvValue {
-						containers[i].Env[j].Value = EnvValue
+				if envVar.Name == env {
+					if envVar.Value != val {
+						containers[i].Env[j].Value = val
 					}
 					break
 				}
 			}
 			containers[i].Env = append(containers[i].Env, corev1.EnvVar{
-				Name:  SpiffeEnvVar,
-				Value: EnvValue,
+				Name:  env,
+				Value: val,
 			})
 		}
 	}
 	return nil
+}
+
+func (sc InjectCSI) GetExtraEnvCm(pod *corev1.Pod) (ExtraEnv, error) {
+	ctx := context.Background()
+
+	extraEnv := make(ExtraEnv)
+
+	cl, err := sc.GetDirectClient()
+	if err != nil {
+		return extraEnv, err
+	}
+
+	cm := &corev1.ConfigMap{}
+	err = cl.Get(ctx, client.ObjectKey{Name: ExtraEnvCmName, Namespace: os.Getenv("POD_NAMESPACE")}, cm)
+	if apierrors.IsNotFound(err) {
+		sc.Logger.Info("ConfigMap", ExtraEnvCmName, "not found in namespace", os.Getenv("POD_NAMESPACE"))
+		return extraEnv, nil
+	} else if err != nil {
+		sc.Logger.Error("Error getting ConfigMap", ExtraEnvCmName, ":", err)
+		return extraEnv, err
+	}
+
+	if len(cm.Data) > 0 {
+		maps.Copy(extraEnv, cm.Data)
+
+	} else {
+		sc.Logger.Info("ConfigMap", ExtraEnvCmName, "has no data")
+	}
+
+	return extraEnv, nil
+
+}
+
+func (sc InjectCSI) GetDirectClient() (client.Client, error) {
+	directClient, err := client.New(config.GetConfigOrDie(), client.Options{})
+	if err != nil {
+		sc.Logger.Error("Failed to create direct client:", err)
+		return nil, err
+	}
+	return directClient, nil
+
 }
