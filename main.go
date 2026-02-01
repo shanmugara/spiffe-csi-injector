@@ -54,6 +54,8 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Infof("creating admission struct")
 	adm := admission.Admitter{
+		// TODO: Replace 'nil' with a valid Kubernetes client if needed
+		Client: nil,
 		Logger:  logger,
 		Request: in.Request,
 	}
