@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/sirupsen/logrus"
-	admissionv1 "k8s.io/api/admission/v1"
 	"net/http"
 	"os"
 	"spiffe-csi-injector/admission"
+
+	"github.com/sirupsen/logrus"
+	admissionv1 "k8s.io/api/admission/v1"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 )
 
 func main() {
+	// setup log levels
 	setLogger()
 
 	// handle the default routes
@@ -54,8 +56,7 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Infof("creating admission struct")
 	adm := admission.Admitter{
-		// TODO: Replace 'nil' with a valid Kubernetes client if needed
-		Client: nil,
+		Client:  nil,
 		Logger:  logger,
 		Request: in.Request,
 	}
