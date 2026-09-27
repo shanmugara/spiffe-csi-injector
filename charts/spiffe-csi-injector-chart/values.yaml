@@ -1,0 +1,92 @@
+# Default values for spiffe-csi-injector-chart.
+
+replicaCount: 1
+
+image:
+  repository: docker.io/shanmugara/spiffe-csi-injector
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart's appVersion.
+  tag: ""
+
+serviceAccount:
+  create: true
+  # Must stay "spiffe-csi-injector" - matches the existing live RoleBinding
+  # (spiffe-csi-injector-configmap-read) subject; renaming it requires also
+  # updating that binding.
+  name: "spiffe-csi-injector"
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+resources: {}
+
+# Service the MutatingWebhookConfiguration and cert-manager Certificate
+# target. Name is fixed at "csi-injector" to match the live webhook's
+# clientConfig.service.name.
+service:
+  name: csi-injector
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8443
+      protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: https
+    scheme: HTTPS
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: https
+    scheme: HTTPS
+
+# certManager configuration for the webhook's serving certificate.
+certificate:
+  enabled: true
+  issuerRef:
+    name: cluster-ca-issuer
+    kind: ClusterIssuer
+
+# webhook configuration
+webhook:
+  port: 8443
+  timeoutSeconds: 2
+  # Narrowly scoped via namespaceSelector below (opt-in, not opt-out like
+  # ca-bundle-injector), so Fail carries much less blast radius here - only
+  # namespaces that explicitly opt in are affected by an outage. Keep
+  # webhookWait.enabled true regardless, so the webhook config is never
+  # activated before a pod is actually Ready to serve it.
+  failurePolicy: Fail
+  namespaceSelector:
+    matchLabels:
+      csi-webhook: "enabled"
+
+# Gates the MutatingWebhookConfiguration behind a post-install/post-upgrade
+# Job that waits for a spiffe-csi-injector pod to become Ready before the
+# webhook config is created. Set to false to fall back to the chart's
+# default (unordered) resource application.
+webhookWait:
+  enabled: true
+  image:
+    repository: docker.io/bitnami/kubectl
+    tag: "latest"
+  timeoutSeconds: 90
+
+# Name of the optional ConfigMap (in this chart's own namespace) that, if
+# present, supplies extra environment variables injected into every
+# container/init-container this webhook mutates. Not created by this
+# chart - create it separately if you need it.
+extraEnvConfigMapName: spiffe-csi-injector-extra-env
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

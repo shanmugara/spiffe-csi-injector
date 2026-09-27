@@ -9,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 const (
@@ -23,6 +22,7 @@ const (
 
 type InjectCSI struct {
 	Logger logrus.FieldLogger
+	Client client.Client
 }
 
 type ExtraEnv map[string]string
@@ -52,26 +52,21 @@ func (sc InjectCSI) Mutate(pod *corev1.Pod) (*corev1.Pod, error) {
 	return mpod, nil
 }
 
-// CheckPodVolume checks if the pod has the volume and csi driver
-func (sc InjectCSI) CheckPodVolume(pod *corev1.Pod) (bool, bool) {
-	sc.Logger.Info("Checking pod volumes:", pod.Namespace, pod.Name)
-	VolNameExists := false
-	CsiDriverExists := false
-	for _, volume := range pod.Spec.Volumes {
-		sc.Logger.Info("Checking if volume is workload-socket:", pod.Name)
+// findWorkloadSocketVolume returns the index of the pod's workload-socket
+// Volume, if any.
+func (sc InjectCSI) findWorkloadSocketVolume(pod *corev1.Pod) (int, bool) {
+	for i, volume := range pod.Spec.Volumes {
 		if volume.Name == WorkloadSocket {
-			sc.Logger.Info("workload-socket volume name exists:", volume.Name)
-			VolNameExists = true
-		}
-		sc.Logger.Info("Checking if volume is CSIDriver:", pod.Name)
-		if volume.CSI != nil {
-			if volume.CSI.Driver == CsiDriver {
-				sc.Logger.Info("CSI driver exists:", volume.Name)
-				CsiDriverExists = true
-			}
+			return i, true
 		}
 	}
-	return VolNameExists, CsiDriverExists
+	return -1, false
+}
+
+// csiVolumeIsCorrect reports whether volume already uses the expected CSI
+// driver, i.e. no mutation is needed.
+func (sc InjectCSI) csiVolumeIsCorrect(volume corev1.Volume) bool {
+	return volume.CSI != nil && volume.CSI.Driver == CsiDriver
 }
 
 func (sc InjectCSI) CheckContainerVolumeMount(container corev1.Container) (bool, bool) {
@@ -103,28 +98,19 @@ func (sc *InjectCSI) InjectCsiVolume(mpod *corev1.Pod) error {
 		},
 	}
 
-	// Add the volume to the pod
-	csiVolExists, CsiDriverExists := sc.CheckPodVolume(mpod)
-	sc.Logger.Info("csiVolExists:", csiVolExists, "CsiDriverExists:", CsiDriverExists)
-	if !csiVolExists && !CsiDriverExists {
-		//sc.Logger.Info("Adding CSI volume to pod", mpod.Name, mpod.Namespace)
+	// Ensure a workload-socket Volume exists and uses the expected CSI
+	// driver, regardless of whether that driver happens to already be
+	// mounted under some other volume name.
+	idx, found := sc.findWorkloadSocketVolume(mpod)
+	switch {
+	case !found:
+		sc.Logger.Info("Adding CSI volume to pod", mpod.Name, mpod.Namespace)
 		mpod.Spec.Volumes = append(mpod.Spec.Volumes, CSIVolume)
-	}
-
-	if csiVolExists && !CsiDriverExists {
-		sc.Logger.Info("csiVol exists but CSIdriver does not exist")
-		var updatedVolumes []corev1.Volume
-		//sc.Logger.Debug("Updating CSI volume driver in pod", mpod.Name, mpod.Namespace)
-		for _, volume := range mpod.Spec.Volumes {
-
-			if volume.Name != WorkloadSocket {
-				updatedVolumes = append(updatedVolumes, volume)
-			}
-		}
-		updatedVolumes = append(updatedVolumes, CSIVolume)
-		mpod.Spec.Volumes = updatedVolumes
-	} else {
-		sc.Logger.Info("DID Not meet the condition csiVolExists && !CsiDriverExists")
+	case !sc.csiVolumeIsCorrect(mpod.Spec.Volumes[idx]):
+		sc.Logger.Info("workload-socket volume exists but uses the wrong driver, replacing:", mpod.Name)
+		mpod.Spec.Volumes[idx] = CSIVolume
+	default:
+		sc.Logger.Info("workload-socket volume already correctly configured:", mpod.Name)
 	}
 	return nil
 }
@@ -212,22 +198,17 @@ func (sc InjectCSI) InjectEnv(mpod *corev1.Pod) error {
 
 func (sc InjectCSI) CheckEnvVar(containers []corev1.Container, env string, val string) error {
 	for i := range containers {
-		if containers[i].Env == nil {
-			containers[i].Env = []corev1.EnvVar{
-				{
-					Name:  env,
-					Value: val,
-				},
-			}
-		} else {
-			for j, envVar := range containers[i].Env {
-				if envVar.Name == env {
-					if envVar.Value != val {
-						containers[i].Env[j].Value = val
-					}
-					break
+		found := false
+		for j, envVar := range containers[i].Env {
+			if envVar.Name == env {
+				if envVar.Value != val {
+					containers[i].Env[j].Value = val
 				}
+				found = true
+				break
 			}
+		}
+		if !found {
 			containers[i].Env = append(containers[i].Env, corev1.EnvVar{
 				Name:  env,
 				Value: val,
@@ -242,13 +223,8 @@ func (sc InjectCSI) GetExtraEnvCm(pod *corev1.Pod) (ExtraEnv, error) {
 
 	extraEnv := make(ExtraEnv)
 
-	cl, err := sc.GetDirectClient()
-	if err != nil {
-		return extraEnv, err
-	}
-
 	cm := &corev1.ConfigMap{}
-	err = cl.Get(ctx, client.ObjectKey{Name: ExtraEnvCmName, Namespace: os.Getenv("POD_NAMESPACE")}, cm)
+	err := sc.Client.Get(ctx, client.ObjectKey{Name: ExtraEnvCmName, Namespace: os.Getenv("POD_NAMESPACE")}, cm)
 	if apierrors.IsNotFound(err) {
 		sc.Logger.Info("ConfigMap", ExtraEnvCmName, "not found in namespace", os.Getenv("POD_NAMESPACE"))
 		return extraEnv, nil
@@ -265,16 +241,5 @@ func (sc InjectCSI) GetExtraEnvCm(pod *corev1.Pod) (ExtraEnv, error) {
 	}
 
 	return extraEnv, nil
-
-}
-
-// Simple function to get a direct client incluster
-func (sc InjectCSI) GetDirectClient() (client.Client, error) {
-	directClient, err := client.New(config.GetConfigOrDie(), client.Options{})
-	if err != nil {
-		sc.Logger.Error("Failed to create direct client:", err)
-		return nil, err
-	}
-	return directClient, nil
 
 }

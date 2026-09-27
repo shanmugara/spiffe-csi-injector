@@ -2,14 +2,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"spiffe-csi-injector/admission"
+	"spiffe-csi-injector/mutation"
 
 	"github.com/sirupsen/logrus"
 	admissionv1 "k8s.io/api/admission/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 const (
@@ -19,9 +26,20 @@ const (
 	HTTP_PORT = "8080"
 )
 
+// sharedClient is built once at startup (backed by a cache scoped to just
+// the extra-env ConfigMap) and reused across every admission request,
+// instead of each request building its own throwaway, uncached client.
+var sharedClient client.Client
+
 func main() {
 	// setup log levels
 	setLogger()
+
+	cl, err := newCachedClient()
+	if err != nil {
+		logrus.Fatalf("failed to set up Kubernetes client: %v", err)
+	}
+	sharedClient = cl
 
 	// handle the default routes
 	http.HandleFunc("/mutate", ServeMutatePods)
@@ -56,7 +74,7 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Infof("creating admission struct")
 	adm := admission.Admitter{
-		Client:  nil,
+		Client:  sharedClient,
 		Logger:  logger,
 		Request: in.Request,
 	}
@@ -82,6 +100,47 @@ func ServeMutatePods(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("sending response")
 	logger.Debugf("%s", jout)
 	fmt.Fprintf(w, "%s", jout)
+}
+
+// newCachedClient builds a client backed by a SharedInformer-based cache,
+// scoped to just the extra-env ConfigMap by name, in this pod's own
+// namespace (GetExtraEnvCm always looks it up via POD_NAMESPACE, i.e. the
+// injector's own namespace, never the target pod's) - so a plain namespaced
+// Role/RoleBinding is all the RBAC this ever needs, matching how it's
+// already granted live (no ClusterRole required). Admission requests are
+// served from this locally synced cache instead of a live API call each
+// time.
+func newCachedClient() (client.Client, error) {
+	cfg := config.GetConfigOrDie()
+	ownNamespace := os.Getenv("POD_NAMESPACE")
+
+	c, err := cache.New(cfg, cache.Options{
+		DefaultNamespaces: map[string]cache.Config{
+			ownNamespace: {},
+		},
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.ConfigMap{}: {
+				Field: fields.OneTermEqualSelector("metadata.name", mutation.ExtraEnvCmName),
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build cache: %w", err)
+	}
+
+	ctx := context.Background()
+	go func() {
+		if err := c.Start(ctx); err != nil {
+			logrus.Fatalf("cache stopped unexpectedly: %v", err)
+		}
+	}()
+	if !c.WaitForCacheSync(ctx) {
+		return nil, fmt.Errorf("failed to sync cache")
+	}
+
+	return client.New(cfg, client.Options{
+		Cache: &client.CacheOptions{Reader: c},
+	})
 }
 
 func ServeHealthz(w http.ResponseWriter, r *http.Request) {

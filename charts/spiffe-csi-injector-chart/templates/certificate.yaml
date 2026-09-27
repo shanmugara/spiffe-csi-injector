@@ -1,0 +1,23 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: csi-injector-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+spec:
+  commonName: {{ .Values.service.name }}.{{ .Release.Namespace }}.svc
+  dnsNames:
+    - "{{ .Values.service.name }}.{{ .Release.Namespace }}.svc"
+    - "{{ .Values.service.name }}.{{ .Release.Namespace }}.svc.cluster.local"
+  secretName: csi-injector-tls
+  issuerRef:
+    name: {{ .Values.certificate.issuerRef.name }}
+    group: cert-manager.io
+    kind: {{ .Values.certificate.issuerRef.kind }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+{{- end }}

@@ -6,14 +6,16 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/wI2L/jsondiff"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Mutator struct {
 	Logger *logrus.Entry
+	Client client.Client
 }
 
-func NewMutator(logger *logrus.Entry) *Mutator {
-	return &Mutator{Logger: logger}
+func NewMutator(logger *logrus.Entry, cl client.Client) *Mutator {
+	return &Mutator{Logger: logger, Client: cl}
 }
 
 type PodMutator interface {
@@ -34,7 +36,7 @@ func (m *Mutator) MutatePodPatch(pod *corev1.Pod) ([]byte, error) {
 	log := logrus.WithField("pod", podName)
 
 	mutations := []PodMutator{
-		InjectCSI{Logger: log},
+		InjectCSI{Logger: log, Client: m.Client},
 	}
 	mpod := pod.DeepCopy()
 

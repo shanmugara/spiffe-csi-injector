@@ -55,7 +55,7 @@ func (a *Admitter) MutatePodReview() (*admissionv1.AdmissionReview, error) {
 
 	//Create a new mutator
 	a.Logger.Info("creating a new mutator instance")
-	m := mutation.NewMutator(a.Logger)
+	m := mutation.NewMutator(a.Logger, a.Client)
 	a.Logger.Info("call mutatePodPatch..")
 	patch, err := m.MutatePodPatch(pod)
 	if err != nil {
