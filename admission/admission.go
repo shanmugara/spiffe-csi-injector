@@ -3,13 +3,15 @@ package admission
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"spiffe-csi-injector/mutation"
+
 	"github.com/sirupsen/logrus"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"net/http"
-	"spiffe-csi-injector/mutation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -18,6 +20,7 @@ const (
 )
 
 type Admitter struct {
+	Client  client.Client
 	Logger  *logrus.Entry
 	Request *admissionv1.AdmissionRequest
 }
@@ -52,7 +55,7 @@ func (a *Admitter) MutatePodReview() (*admissionv1.AdmissionReview, error) {
 
 	//Create a new mutator
 	a.Logger.Info("creating a new mutator instance")
-	m := mutation.NewMutator(a.Logger)
+	m := mutation.NewMutator(a.Logger, a.Client)
 	a.Logger.Info("call mutatePodPatch..")
 	patch, err := m.MutatePodPatch(pod)
 	if err != nil {

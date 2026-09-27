@@ -1,0 +1,30 @@
+# Namespaced Role, not cluster-wide - the webhook only ever looks up its
+# extra-env ConfigMap in its own namespace (POD_NAMESPACE), never in the
+# namespace of the pod it's mutating. Matches the live RBAC this replaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spiffe-csi-injector-configmap-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spiffe-csi-injector-configmap-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spiffe-csi-injector-configmap-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}

@@ -1,0 +1,95 @@
+{{- if .Values.webhookWait.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spiffe-csi-injector-webhook-wait
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spiffe-csi-injector-webhook-wait
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spiffe-csi-injector-webhook-wait
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spiffe-csi-injector-webhook-wait
+subjects:
+  - kind: ServiceAccount
+    name: spiffe-csi-injector-webhook-wait
+    namespace: {{ .Release.Namespace }}
+---
+# Runs after the Deployment/Service are created (normal manifest phase) and
+# before the MutatingWebhookConfiguration (post-install/post-upgrade hook,
+# weight "0"). Blocks release completion until a csi-injector pod is
+# actually Ready, so the webhook never activates against an empty Service.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spiffe-csi-injector-webhook-wait
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spiffe-csi-injector.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.webhookWait.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        # Deliberately NOT "app: csi-injector" - the wait command below
+        # selects on that label, and a container with no readinessProbe is
+        # considered Ready as soon as it starts Running. If this pod carried
+        # that label it would satisfy its own wait check immediately,
+        # regardless of whether the actual Deployment's pod is ready.
+        app.kubernetes.io/component: webhook-wait
+    spec:
+      serviceAccountName: spiffe-csi-injector-webhook-wait
+      restartPolicy: Never
+      containers:
+        - name: wait-for-webhook
+          image: "{{ .Values.webhookWait.image.repository }}:{{ .Values.webhookWait.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              until kubectl wait --for=condition=Ready pod \
+                  -l app=csi-injector \
+                  -n {{ .Release.Namespace }} --timeout=10s; do
+                echo "waiting for a csi-injector pod to become ready..."
+                sleep 3
+              done
+              echo "csi-injector pod is ready"
+{{- end }}

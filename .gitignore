@@ -1,1 +1,6 @@
 .idea
+*.log
+*.tmp
+*.swp
+*.bak
+*.tgz
